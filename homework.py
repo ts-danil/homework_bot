@@ -1,4 +1,5 @@
 import logging
+import sys
 import os
 import time
 from asyncio.log import logger
@@ -24,9 +25,8 @@ ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
 logging.basicConfig(level=logging.DEBUG,
-                    filename='main.log',
-                    filemode='w',
                     format='%(asctime)s [%(levelname)s] %(message)s')
+logging.StreamHandler(sys.stdout)
 
 
 HOMEWORK_STATUSES = {
