@@ -1,6 +1,6 @@
 import logging
-import sys
 import os
+import sys
 import time
 from asyncio.log import logger
 from http import HTTPStatus
@@ -9,9 +9,7 @@ import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import (API_error,
-                        unexpected_homework_status,
-                        unexpected_response)
+from exceptions import ApiError, UnexpectedHomeworkStatus, UnexpectedResponse
 
 load_dotenv()
 
@@ -45,13 +43,18 @@ def get_api_answer(current_timestamp):
     """
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-    if response.status_code != HTTPStatus.OK:
-        error_text = (f'Сбой при работе с эндпоинт.'
-                      f'API вернул {response.status_code}')
-        logger.error(error_text)
-        raise API_error(error_text)
-    return response.json()
+    try:
+        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    except Exception:
+        raise ApiError(f'Эндпоинт недоступен {ENDPOINT}')
+    else:
+        if response.status_code != HTTPStatus.OK:
+            raise ApiError(f'Сбой при работе с эндпоинт.'
+                           f'{response.reason}'
+                           f'API вернул {response.status_code}'
+                           f'Содержание ответа: {response.text}'
+                           f'Параметры запроса: {params}')
+        return response.json()
 
 
 def send_message(bot, message):
@@ -62,9 +65,11 @@ def send_message(bot, message):
     """
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
+    except telegram.error.TelegramError as e:
+        logger.error(f'При отправке сообщения возникла ошибка {e}',
+                     exc_info=True)
+    else:
         logger.info(f'Сообщение удачно отправлено: {message}')
-    except Exception:
-        logger.error(f'Сообщение не отправлено: {message}')
 
 
 def check_response(response):
@@ -74,10 +79,16 @@ def check_response(response):
     приведенный к типам данных Python. Если ответ API соответствует ожиданиям,
     то функция возвращает список домашних работ.
     """
+    if not isinstance(response, dict):
+        raise TypeError(f'Ответ API не является словарем.'
+                        f'response: {response} Тип: {type(response)}')
+    if 'homeworks' not in response:
+        raise UnexpectedResponse(f'Ответ API не содержит домашних работ.'
+                                 f'response: {response}')
     if not isinstance(response['homeworks'], list):
-        error_text = f'Отсутствуют ожидаемые ключи в ответе API: {response}'
-        logger.error(error_text)
-        raise unexpected_response(error_text)
+        raise UnexpectedResponse(f'Homeworks из ответа API не является списком'
+                                 f' Тип значения homeworks: '
+                                 f'{type(response["homeworks"])}')
     return response['homeworks']
 
 
@@ -88,14 +99,15 @@ def parse_status(homework):
     В случае успеха, функция возвращает строку для отправки в Telegram,
     содержащую один из вердиктов словаря HOMEWORK_STATUSES
     """
-    homework_name = homework['homework_name']
-    homework_status = homework['status']
+    if 'homework_name' not in homework or 'status' not in homework:
+        raise KeyError(f'Отсутствуют ожидаемые ключи в homework. '
+                       f'Homework: {homework}')
+    homework_name = homework.get('homework_name')
+    homework_status = homework.get('status')
     if homework_status not in HOMEWORK_STATUSES:
-        error_text = (f'Недокументированный статус'
-                      f'домашней работы: {homework_status}')
-        logger.error(error_text)
-        raise unexpected_homework_status(error_text)
-    verdict = HOMEWORK_STATUSES[homework_status]
+        raise UnexpectedHomeworkStatus(f'Недокументированный статус '
+                                       f'домашней работы: {homework_status}')
+    verdict = HOMEWORK_STATUSES.get(homework_status)
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -108,12 +120,7 @@ def check_tokens():
     tokens = (PRACTICUM_TOKEN,
               TELEGRAM_TOKEN,
               TELEGRAM_CHAT_ID)
-    for token in tokens:
-        if bool(token) is False:
-            token = ''
-            logger.critical('Отсутствует обязательная переменная')
-            return False
-    return True
+    return all(tokens)
 
 
 def main():
@@ -121,23 +128,26 @@ def main():
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
     current_error = ''
-    it_run = check_tokens()
-    while it_run:
+    if not check_tokens():
+        logger.critical('Отсутствует обязательная переменная')
+        sys.exit()
+    while True:
         try:
             response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
             if bool(homeworks):
-                for homework in homeworks:
-                    send_message(bot, parse_status(homework))
+                send_message(bot, parse_status(homeworks[-1]))
             else:
                 logger.debug('Новые статусы отсутствуют')
             current_error = ''
             current_timestamp += RETRY_TIME
-            time.sleep(RETRY_TIME)
         except Exception as error:
+            logger.error(error)
             if str(error) != current_error:
                 current_error = str(error)
                 send_message(bot, str(error))
+        finally:
+            time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
