@@ -45,7 +45,7 @@ def get_api_answer(current_timestamp):
     params = {'from_date': timestamp}
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-    except Exception:
+    except requests.RequestException:
         raise ApiError(f'Эндпоинт недоступен {ENDPOINT}')
     else:
         if response.status_code != HTTPStatus.OK:
@@ -135,12 +135,12 @@ def main():
         try:
             response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
-            if bool(homeworks):
-                send_message(bot, parse_status(homeworks[-1]))
+            if homeworks:
+                send_message(bot, parse_status(homeworks[0]))
             else:
                 logger.debug('Новые статусы отсутствуют')
             current_error = ''
-            current_timestamp += RETRY_TIME
+            current_timestamp = response.get('current_date', current_timestamp)
         except Exception as error:
             logger.error(error)
             if str(error) != current_error:
